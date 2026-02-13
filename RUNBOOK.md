@@ -60,10 +60,16 @@ Every PR must pass:
 - **Interface compatibility**: no contract drift vs `interfaces.md` unless explicitly updated (and reviewed)
 
 No CI runner is configured yet. This means the PR author is responsible for running tests locally and reporting results in the PR description.
+This manual test gate is part of the current `master` baseline and should not be removed by feature branches.
 
 Recommended local commands (to include in PR):
 - `python -m pytest -q`
 - (optional during development) `python -m pytest -q tests/test_maze_contract.py`
+
+Required PR evidence (until CI exists):
+- Paste command(s) run and the final pass/fail summary.
+- Confirm whether all P0 tests passed.
+- If any test was skipped, explain why and link follow-up work.
 
 ## Shared Integration Test Backlog (Priority Ordered)
 

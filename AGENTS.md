@@ -34,6 +34,7 @@ PR author responsibilities:
 - run tests locally
 - paste test results and exact command(s) used in the PR description
 - keep PRs small and focused (one concern per PR)
+- treat this manual test gate as required policy for PRs to `master` until CI is added
 
 Recommended branch naming:
 - `feat/<area>-<short-description>`
@@ -49,6 +50,10 @@ Areas: `maze`, `db`, `engine`, `cli`, `puzzles`, `docs`, `tests`
 - [ ] Scope: one module/concern (maze OR db OR engine/cli OR docs/tests)
 - [ ] Tests run locally:
   - [ ] `python -m pytest -q`
+- [ ] PR includes test evidence:
+  - [ ] command(s) run
+  - [ ] final pass/fail summary
+  - [ ] note on any skipped tests and why
 - [ ] Shared P0 integration tests pass (see `RUNBOOK.md`)
 - [ ] No contract drift:
   - [ ] if contracts changed, updated `interfaces.md`
