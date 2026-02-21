@@ -1,5 +1,4 @@
 import importlib
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -32,36 +31,29 @@ def db_module():
     return import_required("db")
 
 
-def _make_repo(db_mod, path: Path):
-    """
-    Flexible factory so teams can choose a concrete implementation name.
-    Preferred: db.JsonGameRepository(path)
-    Fallbacks: db.Repository(path), db.GameRepository(path), db.open_repo(path)
-    """
-    for cls_name in ("JsonGameRepository", "Repository", "GameRepository"):
-        cls = getattr(db_mod, cls_name, None)
-        if cls is not None:
-            return cls(path)
-
-    fn = getattr(db_mod, "open_repo", None)
+@pytest.fixture
+def repo(tmp_path, db_module):
+    """SQLite repository at tmp_path / game.db via open_repo."""
+    fn = getattr(db_module, "open_repo", None)
     if callable(fn):
-        return fn(path)
-
+        return fn(tmp_path / "game.db")
     pytest.fail(
-        "db module must provide a repository constructor. "
-        "Expected one of: JsonGameRepository, Repository, GameRepository, open_repo(path)."
+        "db module must provide open_repo(path). "
+        "See interfaces.md Section 4.3."
     )
 
 
 @pytest.fixture
-def repo(tmp_path, db_module):
-    db_path = tmp_path / "game.json"
-    return _make_repo(db_module, db_path)
+def repo_path(tmp_path):
+    return tmp_path / "game.db"
 
 
 @pytest.fixture
-def repo_path(tmp_path):
-    return tmp_path / "game.json"
+def procedural_maze(maze_module):
+    """Seeded 5x5 maze with 2 gates for multi-gate tests."""
+    build = getattr(maze_module, "build_square_maze", None)
+    assert build is not None, "maze.build_square_maze must exist per interfaces.md"
+    return build(size=5, seed=42, num_gates=2)
 
 
 @dataclass(frozen=True)
@@ -92,8 +84,4 @@ class _TestPuzzleRegistry:
 @pytest.fixture
 def puzzle_registry():
     return _TestPuzzleRegistry()
-
-
-def read_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
 

@@ -1,8 +1,8 @@
-## Quiz Maze Game — Module Interfaces (Walking Skeleton)
+## Quiz Maze Game — Module Interfaces
 
 This document defines the *stable contracts* between the 3 modules:
 - `maze.py` (domain / world model)
-- `db.py` (persistence boundary; JSON-backed mock ORM for now)
+- `db.py` (persistence boundary; SQLite via SQLModel)
 - `main.py` (game engine + UI wiring; CLI now, PyQt later)
 
 The goal is to allow each module to be developed and tested independently.
@@ -25,6 +25,12 @@ All persisted state must be JSON-safe:
 - `str | int | float | bool | None`
 - `list[...]` of JSON-safe values
 - `dict[str, ...]` of JSON-safe values
+
+Definition used in this doc:
+- `AnyJSON` is a JSON-safe value:
+  - `str | int | float | bool | None`
+  - `list[AnyJSON]`
+  - `dict[str, AnyJSON]`
 
 Timestamps: store as ISO-8601 UTC strings (e.g., `"2026-02-13T10:15:30Z"`).
 
@@ -86,24 +92,24 @@ A concrete `Maze` class should expose at least:
   - Deterministic hand-authored 3x3 layout
   - Must define `start`, `exit`, walls (`blocked`), and at least 1-2 puzzle placements/gates
 
-- `build_square_maze(size: int, seed: int) -> Maze`
+- `build_square_maze(size: int, seed: int, num_gates: int = 1) -> Maze`
   - Procedurally generates an N×N maze using seeded randomness
   - Uses `random.Random(seed)` for deterministic generation (e.g., recursive backtracker)
   - Start at `Position(0, 0)`, exit at `Position(size-1, size-1)`
-  - Must place at least one gate on an edge along a reachable path
+  - Places `num_gates` gates on distinct edges along the BFS shortest path from start to exit
   - Returns a `Maze` with `maze_id` and `maze_version` appropriate for the size
 
 ### 3.4 Fog of War (renderer responsibility)
 
-Fog-of-war visibility is handled by the engine/CLI renderer, not by `maze.py`. The maze stays purely topological. The renderer receives a `visited: set[Position]` and hides unvisited cells (e.g., as `###`) and the exit until discovered.
+Fog of war is the **default gameplay mode**. The maze stays purely topological — visibility is handled entirely by the engine and renderer. The engine tracks a `visited` set in persisted state. The renderer hides unvisited cells (e.g., as `###`) and the exit until discovered. A `reveal_all` flag exists for debug/testing only.
 
 ---
 
-## 4) `db.py` — Persistence Contract (JSON + SQLite via SQLModel)
+## 4) `db.py` — Persistence Contract (SQLite via SQLModel)
 
 ### 4.1 Records (DTOs) returned to `main.py`
 
-These are plain dataclasses OR plain dicts (implementation choice), but fields must be stable.
+Repository methods return plain `dict[str, Any]`. Dataclass definitions below document the expected dict shape; they serve as living documentation of the contract.
 
 - `PlayerRecord`
   - `id: str`
@@ -129,60 +135,49 @@ These are plain dataclasses OR plain dicts (implementation choice), but fields m
   - `metrics: dict[str, AnyJSON]`
   - `created_at: str`
 
-### 4.2 Repository / Session Interface (minimum)
-
-`main.py` depends on an object providing these methods:
-
-- Player ops
-  - `get_player(player_id: str) -> PlayerRecord | None`
-  - `get_or_create_player(handle: str) -> PlayerRecord`
-
-- Game ops
-  - `create_game(player_id: str, maze_id: str, maze_version: str, initial_state: dict) -> GameRecord`
-  - `get_game(game_id: str) -> GameRecord | None`
-  - `save_game(game_id: str, state: dict, status: str = "in_progress") -> GameRecord`
-
-- Score ops
-  - `record_score(player_id: str, game_id: str, maze_id: str, maze_version: str, metrics: dict) -> ScoreRecord`
-  - `top_scores(maze_id: str | None = None, limit: int = 10) -> list[ScoreRecord]`
-
-Notes:
-- `state` is treated as an opaque JSON dict by the DB layer (no imports from `maze.py`).
-- IDs are strings (uuid recommended).
-- DB implementation should be safe against partial writes (write-then-rename strategy recommended later).
-
-### 4.3 JSON File Shape (JsonGameRepository implementation detail)
-
-Top-level JSON object:
-- `schema_version: int`
-- `players: { "<player_id>": PlayerRecord-as-dict }`
-- `games: { "<game_id>": GameRecord-as-dict }`
-- `scores: { "<score_id>": ScoreRecord-as-dict }`
-
-### 4.4 SQLite Backend (SqliteGameRepository)
-
-- `SqliteGameRepository` — same interface as `JsonGameRepository` but backed by SQLite via SQLModel
-- Uses SQLModel table classes for `players`, `games`, `scores`, and `questions`
-- All methods return plain dicts (or dict-like records) matching the existing contract
-
-- `open_repo(path: str | Path) -> GameRepository`
-  - If `path` suffix is `.db` → return `SqliteGameRepository(path)`
-  - Otherwise → return `JsonGameRepository(path)` (backward compatible)
-
-### 4.5 Question Bank (SQLite only)
-
-- `QuestionRecord` (table/model) fields:
+- `QuestionRecord`
   - `id: str`
   - `question_text: str`
   - `correct_answer: str`
   - `category: str` (optional grouping)
   - `has_been_asked: bool`
 
-- New methods on repository (SqliteGameRepository; JsonGameRepository may stub or raise):
-  - `get_random_question(category: str | None = None) -> dict | None` — returns a random question where `has_been_asked` is `False`; returns `None` if all exhausted
-  - `mark_question_asked(question_id: str) -> None` — sets `has_been_asked = True`
-  - `seed_questions(questions: list[dict]) -> None` — bulk insert questions for initial population
+### 4.2 Repository Interface
+
+`main.py` depends on an object (a **GameRepository**) providing these methods. The default implementation is `SqliteGameRepository`. All methods return `dict[str, Any]` matching the record shapes above. The SQLModel ORM is an internal implementation detail of `db.py` and does not leak into the return types.
+
+- Player ops
+  - `get_player(player_id: str) -> dict | None`
+  - `get_or_create_player(handle: str) -> dict`
+
+- Game ops
+  - `create_game(player_id: str, maze_id: str, maze_version: str, initial_state: dict) -> dict`
+  - `get_game(game_id: str) -> dict | None`
+  - `save_game(game_id: str, state: dict, status: str = "in_progress") -> dict`
+
+- Score ops
+  - `record_score(player_id: str, game_id: str, maze_id: str, maze_version: str, metrics: dict) -> dict`
+  - `top_scores(maze_id: str | None = None, limit: int = 10) -> list[dict]`
+
+- Question bank ops
+  - `get_random_question(category: str | None = None) -> dict | None` — returns a random unasked question; `None` if all exhausted
+  - `mark_question_asked(question_id: str) -> None` — marks a question so it is not reused
+  - `seed_questions(questions: list[dict]) -> None` — bulk-insert questions (idempotent via merge)
   - `reset_questions() -> None` — resets all `has_been_asked` to `False`
+
+- Optional lifecycle
+  - `close() -> None` — release DB resources (if applicable)
+
+Notes:
+- `state` is treated as an opaque JSON dict by the DB layer (no imports from `maze.py`).
+- IDs are strings (uuid recommended).
+- SQLModel table classes (`PlayerModel`, `GameModel`, `ScoreModel`, `QuestionModel`) back the SQLite tables. JSON-typed fields (`state`, `metrics`) are stored as JSON strings internally and parsed/serialized at the repository boundary.
+
+### 4.3 Factory
+
+- `open_repo(path: str | Path) -> SqliteGameRepository`
+  - Returns a `SqliteGameRepository` connected to the given path.
+  - Creates the database and tables if they do not exist.
 
 ---
 
@@ -192,13 +187,24 @@ Top-level JSON object:
 
 The engine maintains a state object; when persisting, it must be converted to JSON-safe dict.
 
-Minimum suggested persisted keys:
+Persisted keys:
 - `pos: {"row": int, "col": int}`
 - `move_count: int`
 - `solved_gates: list[str]` (or `solved_puzzles: list[str]`)
 - `started_at: str`
 - `ended_at: str | None`
 - `visited: list[{"row": int, "col": int}]` — cells the player has been to; used for fog-of-war rendering
+- `hints_used: int` — number of hints consumed (affects scoring)
+- `maze_size: int` — side length of the generated maze (needed to reconstruct on load)
+- `num_gates: int` — number of gates placed (needed to reconstruct on load)
+- `maze_seed: int` — seed used to generate the maze (needed to reconstruct on load)
+
+Backwards-compatible load defaults (if a key is missing on load):
+- `visited`: `[maze.start]`
+- `hints_used`: `0`
+- `maze_size`: `3`
+- `num_gates`: `1`
+- `maze_seed`: `0`
 
 ### 5.2 Puzzle Contract (no UI assumptions)
 
@@ -216,20 +222,17 @@ Minimum suggested persisted keys:
 
 The engine should not print or read input directly. It should accept intents/commands and return a result.
 
-Minimum:
-
 - `GameEngine`
   - Constructor inputs:
     - `maze: Maze` (from `maze.py`)
-    - `repo: GameRepository` (from `db.py`)
+    - `repo: GameRepository` (from `db.py`) — used for persistence and as the question bank
     - `puzzles: PuzzleRegistry`
     - `player_id: str`
     - `game_id: str`
-    - (optional) `question_source` — repository with `get_random_question` / `mark_question_asked` for DB-backed questions at gates
   - Methods:
     - `view() -> GameView`
     - `handle(command: Command) -> GameOutput`
-  - When a player hits a gated door, engine may request an unused question from `question_source` (repo) via `get_random_question()`; falls back to `PuzzleRegistry` if none available. On correct answer, calls `mark_question_asked(question_id)`.
+  - When a player hits a gated door, the engine requests an unused question from the repo via `get_random_question()`. Falls back to `PuzzleRegistry` if none available. On correct answer, calls `mark_question_asked(question_id)`.
 
 - `Command` (parsed from UI)
   - `verb: str`
@@ -241,30 +244,37 @@ Minimum:
   - `cell_description: str`
   - `available_moves: list[str]` (e.g. `["N","E"]`)
   - `pending_puzzle: {"puzzle_id": str, "title": str, "prompt": str} | None`
+    - Note: `pending_puzzle["puzzle_id"]` is an opaque identifier. When sourced from the DB question bank it is a question `id`; when sourced from `PuzzleRegistry` it is the puzzle/gate id.
   - `is_complete: bool`
-  - (optional) `map_text: str | None` — pre-rendered fog-of-war ASCII map for display
+  - `move_count: int`
+  - `map_text: str` — pre-rendered fog-of-war ASCII map (always populated by the engine)
+  - `visited_count: int` — number of distinct cells the player has entered
 
 - `GameOutput`
   - `view: GameView`
   - `messages: list[str]` (UI can display however it wants)
-  - `did_persist: bool` (optional)
+  - `did_persist: bool`
 
 ### 5.4 CLI rendering (fog of war)
 
-- `_render_map(maze, pos, visited: set[Position], reveal_all: bool = True) -> str`
+- `_render_map(maze, pos, visited: set[Position], reveal_all: bool = False) -> str`
   - Renders ASCII map with player at `pos`
-  - When `reveal_all=False`: unvisited cells show as `###`; exit hidden until in `visited`
-  - When `reveal_all=True`: full map visible (legacy behavior)
+  - Default (`reveal_all=False`): unvisited cells show as `###`; exit hidden until discovered
+  - `reveal_all=True`: full map visible (debug/testing only)
   - Engine tracks `visited` in state and persists as `list[{"row": int, "col": int}]`
 
-### 5.5 CLI command grammar (walking skeleton)
+### 5.5 CLI command grammar
 
-Minimum verbs (CLI now; PyQt will trigger equivalent commands):
+Verbs (CLI now; PyQt will trigger equivalent commands):
 - Movement: `n|s|e|w` or `go <n|s|e|w>`
 - `look` (re-describe current cell)
-- `map` (show 3x3 view)
+- `map` (show the fog-of-war map)
 - `answer <text>` (submit answer to pending puzzle)
+- `hint` (reveal a clue for the pending puzzle; increments `hints_used`, incurs score penalty)
+- `status` (show game progress: position, moves, gates solved, hints used, exploration %)
 - `save` (persist explicitly; engine may also autosave)
+- `scores` (show leaderboard / top scores)
+- `help` (show command help)
 - `quit`
 
 ---
@@ -274,5 +284,5 @@ Minimum verbs (CLI now; PyQt will trigger equivalent commands):
 - Maze compatibility keys stored in DB:
   - `maze_id`, `maze_version`
 - DB compatibility:
-  - `schema_version`
+  - `schema_version: int` (repository-internal; recommended storage: SQLite `PRAGMA user_version`)
 - Rule: if `schema_version` changes, provide a migration path (later). For now, keep it at `1` and preserve backward compatibility within the prototype.

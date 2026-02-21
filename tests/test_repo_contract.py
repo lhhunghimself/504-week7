@@ -1,5 +1,3 @@
-import json
-
 import pytest
 
 
@@ -21,7 +19,6 @@ def test_create_and_get_game_round_trip(repo):
     loaded = repo.get_game(game_id)
     assert loaded is not None
 
-    # Minimal shape checks (dict or dataclass)
     if isinstance(loaded, dict):
         assert loaded["player_id"] == player_id
         assert loaded["maze_id"] == "maze-3x3-v1"
@@ -90,7 +87,6 @@ def test_record_score_and_top_scores_ordering(repo):
     top2 = repo.top_scores(maze_id="maze-3x3-v1", limit=2)
     assert len(top2) == 2
 
-    # Ordering rule: lowest elapsed_seconds, then lowest moves
     def metrics(item):
         if isinstance(item, dict):
             return item["metrics"]
@@ -102,26 +98,81 @@ def test_record_score_and_top_scores_ordering(repo):
     assert (m0["elapsed_seconds"], m0["moves"]) == (9, 10)
 
 
-def test_json_schema_root_keys_exist(repo_path, db_module):
-    # Ensure a repo operation causes the JSON file to be created/written.
-    repo = None
-    for cls_name in ("JsonGameRepository", "Repository", "GameRepository"):
-        cls = getattr(db_module, cls_name, None)
-        if cls is not None:
-            repo = cls(repo_path)
+def test_open_repo_creates_database(tmp_path, db_module):
+    fn = getattr(db_module, "open_repo", None)
+    assert callable(fn), "db.open_repo must exist per interfaces.md Section 4.3"
+
+    db_path = tmp_path / "new.db"
+    repo = fn(db_path)
+    assert db_path.exists(), "open_repo must create the database file"
+
+    player = repo.get_or_create_player("neo")
+    assert player is not None
+
+
+def test_question_bank_lifecycle(repo):
+    questions = [
+        {"id": "q1", "question_text": "What is 1+1?", "correct_answer": "2", "category": "math"},
+        {"id": "q2", "question_text": "What is 2+2?", "correct_answer": "4", "category": "math"},
+        {"id": "q3", "question_text": "What is 3+3?", "correct_answer": "6", "category": "math"},
+    ]
+    repo.seed_questions(questions)
+
+    q = repo.get_random_question()
+    assert q is not None
+    assert "id" in q
+    assert "question_text" in q
+    assert "correct_answer" in q
+
+    first_id = q["id"]
+    repo.mark_question_asked(first_id)
+
+    # Fetch + mark the remaining questions until exhausted. Marking as we go avoids
+    # nondeterminism from random selection.
+    seen_ids = {first_id}
+    for _ in range(10):
+        q2 = repo.get_random_question()
+        if q2 is None:
             break
-    if repo is None and callable(getattr(db_module, "open_repo", None)):
-        repo = db_module.open_repo(repo_path)
+        assert q2["id"] != first_id, "Marked question should not be returned"
+        seen_ids.add(q2["id"])
+        repo.mark_question_asked(q2["id"])
 
-    if repo is None:
-        pytest.fail("No repo constructor found to test JSON schema creation.")
+    assert repo.get_random_question() is None, "All questions exhausted should return None"
+    assert len(seen_ids) == 3, f"Expected to see exactly 3 unique question ids, got {seen_ids}"
 
-    repo.get_or_create_player("neo")
-    assert repo_path.exists(), "Repository did not create/write the JSON file"
+    repo.reset_questions()
+    q_after = repo.get_random_question()
+    assert q_after is not None, "reset_questions should make questions available again"
 
-    doc = json.loads(repo_path.read_text(encoding="utf-8"))
-    assert "schema_version" in doc
-    assert "players" in doc
-    assert "games" in doc
-    assert "scores" in doc
+
+def test_seed_questions_is_idempotent(repo):
+    questions = [
+        {"id": "q1", "question_text": "What is 1+1?", "correct_answer": "2"},
+        {"id": "q2", "question_text": "What is 2+2?", "correct_answer": "4"},
+    ]
+    repo.seed_questions(questions)
+    repo.seed_questions(questions)
+
+    seen_ids = set()
+    for _ in range(100):
+        q = repo.get_random_question()
+        if q is None:
+            break
+        seen_ids.add(q["id"])
+        repo.mark_question_asked(q["id"])
+
+    assert len(seen_ids) == 2, (
+        f"Expected exactly 2 unique questions after double-seed, got {len(seen_ids)}"
+    )
+
+
+def test_get_player_returns_none_for_unknown_id(repo):
+    result = repo.get_player("nonexistent-id")
+    assert result is None
+
+
+def test_get_game_returns_none_for_unknown_id(repo):
+    result = repo.get_game("nonexistent-id")
+    assert result is None
 
