@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import random
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -15,14 +15,9 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _as_record(obj: Any) -> Any:
-    # Return dicts as-is; convert dataclasses to dicts if needed.
-    if isinstance(obj, dict):
-        return obj
-    try:
-        return asdict(obj)
-    except TypeError:
-        return obj
+# ---------------------------------------------------------------------------
+# DTO dataclasses (documentation of dict shapes returned to main.py)
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -55,156 +50,17 @@ class ScoreRecord:
     created_at: str
 
 
-class JsonGameRepository:
-    def __init__(self, path: str | Path, schema_version: int = 1):
-        self.path = Path(path)
-        self.schema_version = schema_version
-        self._ensure_store()
-
-    def _empty_doc(self) -> dict[str, Any]:
-        return {
-            "schema_version": self.schema_version,
-            "players": {},
-            "games": {},
-            "scores": {},
-        }
-
-    def _ensure_store(self) -> None:
-        if self.path.exists():
-            return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._write_doc(self._empty_doc())
-
-    def _read_doc(self) -> dict[str, Any]:
-        if not self.path.exists():
-            return self._empty_doc()
-        raw = self.path.read_text(encoding="utf-8").strip()
-        if not raw:
-            return self._empty_doc()
-        doc = json.loads(raw)
-        # Backfill missing keys if needed.
-        doc.setdefault("schema_version", self.schema_version)
-        doc.setdefault("players", {})
-        doc.setdefault("games", {})
-        doc.setdefault("scores", {})
-        return doc
-
-    def _write_doc(self, doc: dict[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = self.path.with_suffix(self.path.suffix + ".tmp")
-        tmp_path.write_text(json.dumps(doc, indent=2, sort_keys=True), encoding="utf-8")
-        tmp_path.replace(self.path)
-
-    def _save_doc(self, doc: dict[str, Any]) -> None:
-        doc["schema_version"] = self.schema_version
-        self._write_doc(doc)
-
-    # Player ops
-    def get_player(self, player_id: str) -> dict[str, Any] | None:
-        doc = self._read_doc()
-        return doc["players"].get(player_id)
-
-    def get_or_create_player(self, handle: str) -> dict[str, Any]:
-        doc = self._read_doc()
-        for player in doc["players"].values():
-            if player.get("handle") == handle:
-                return player
-
-        created = PlayerRecord(
-            id=str(uuid4()),
-            handle=handle,
-            created_at=_utc_now_iso(),
-        )
-        record = _as_record(created)
-        doc["players"][record["id"]] = record
-        self._save_doc(doc)
-        return record
-
-    # Game ops
-    def create_game(
-        self,
-        player_id: str,
-        maze_id: str,
-        maze_version: str,
-        initial_state: dict[str, Any],
-    ) -> dict[str, Any]:
-        doc = self._read_doc()
-        now = _utc_now_iso()
-        created = GameRecord(
-            id=str(uuid4()),
-            player_id=player_id,
-            maze_id=maze_id,
-            maze_version=maze_version,
-            state=initial_state,
-            status="in_progress",
-            created_at=now,
-            updated_at=now,
-        )
-        record = _as_record(created)
-        doc["games"][record["id"]] = record
-        self._save_doc(doc)
-        return record
-
-    def get_game(self, game_id: str) -> dict[str, Any] | None:
-        doc = self._read_doc()
-        return doc["games"].get(game_id)
-
-    def save_game(self, game_id: str, state: dict[str, Any], status: str = "in_progress") -> dict[str, Any]:
-        doc = self._read_doc()
-        game = doc["games"].get(game_id)
-        if game is None:
-            raise KeyError(f"Unknown game_id: {game_id}")
-        game["state"] = state
-        game["status"] = status
-        game["updated_at"] = _utc_now_iso()
-        self._save_doc(doc)
-        return game
-
-    # Score ops
-    def record_score(
-        self,
-        player_id: str,
-        game_id: str,
-        maze_id: str,
-        maze_version: str,
-        metrics: dict[str, Any],
-    ) -> dict[str, Any]:
-        doc = self._read_doc()
-        created = ScoreRecord(
-            id=str(uuid4()),
-            player_id=player_id,
-            game_id=game_id,
-            maze_id=maze_id,
-            maze_version=maze_version,
-            metrics=metrics,
-            created_at=_utc_now_iso(),
-        )
-        record = _as_record(created)
-        doc["scores"][record["id"]] = record
-        self._save_doc(doc)
-        return record
-
-    def top_scores(self, maze_id: str | None = None, limit: int = 10) -> list[dict[str, Any]]:
-        doc = self._read_doc()
-        items = list(doc["scores"].values())
-        if maze_id is not None:
-            items = [s for s in items if s.get("maze_id") == maze_id]
-
-        def key_fn(score: dict[str, Any]) -> tuple[Any, Any]:
-            metrics = score.get("metrics", {})
-            return (metrics.get("elapsed_seconds", float("inf")), metrics.get("moves", float("inf")))
-
-        items.sort(key=key_fn)
-        return items[:limit]
-
-
-# Optional aliases for test/consumer flexibility.
-Repository = JsonGameRepository
-GameRepository = JsonGameRepository
+@dataclass
+class QuestionRecord:
+    id: str
+    question_text: str
+    correct_answer: str
+    category: str
+    has_been_asked: bool
 
 
 # ---------------------------------------------------------------------------
-# SQLModel tables for SqliteGameRepository
+# SQLModel table classes (internal ORM; never leaked to callers)
 # ---------------------------------------------------------------------------
 
 
@@ -247,8 +103,164 @@ class QuestionModel(SQLModel, table=True):
     has_been_asked: bool = False
 
 
+# ---------------------------------------------------------------------------
+# Hacker-themed question bank seed data
+# ---------------------------------------------------------------------------
+
+HACKER_SEED_QUESTIONS: list[dict[str, Any]] = [
+    # Python fundamentals (framed as exploit/decode challenges)
+    {
+        "id": "hq-python-01",
+        "question_text": (
+            "FIREWALL PROBE: The intrusion scanner counts items in a list "
+            "before deciding whether to trigger the alarm.\n"
+            "  What built-in function returns the number of items in a list?"
+        ),
+        "correct_answer": "len",
+        "category": "python",
+    },
+    {
+        "id": "hq-python-02",
+        "question_text": (
+            "CODE INJECTION: An agent planted a function inside the target's "
+            "runtime. What Python keyword is used to *define* a function?"
+        ),
+        "correct_answer": "def",
+        "category": "python",
+    },
+    {
+        "id": "hq-python-03",
+        "question_text": (
+            "LOOP EXPLOIT: The sentry daemon loops forever unless you know the "
+            "escape sequence. What Python keyword exits a loop immediately?"
+        ),
+        "correct_answer": "break",
+        "category": "python",
+    },
+    {
+        "id": "hq-python-04",
+        "question_text": (
+            "MEMORY SCAN: You need to skip the current loop iteration without "
+            "breaking out entirely. What Python keyword does this?"
+        ),
+        "correct_answer": "continue",
+        "category": "python",
+    },
+    {
+        "id": "hq-python-05",
+        "question_text": (
+            "CLASS BYPASS: The access-control system is an object. What Python "
+            "keyword defines a class?"
+        ),
+        "correct_answer": "class",
+        "category": "python",
+    },
+    {
+        "id": "hq-python-06",
+        "question_text": (
+            "EXCEPTION TRAP: An alarm is raised when something goes wrong. "
+            "What Python keyword catches a raised exception?"
+        ),
+        "correct_answer": "except",
+        "category": "python",
+    },
+    {
+        "id": "hq-python-07",
+        "question_text": (
+            "DATA EXFIL: You need to send a value back from inside a function "
+            "to your handler. What Python keyword is used to return a value?"
+        ),
+        "correct_answer": "return",
+        "category": "python",
+    },
+    # Security / networking (hacker domain knowledge)
+    {
+        "id": "hq-security-01",
+        "question_text": (
+            "PORT SCAN: The standard port for unencrypted web traffic (HTTP) "
+            "is a well-known value. What is it?"
+        ),
+        "correct_answer": "80",
+        "category": "security",
+    },
+    {
+        "id": "hq-security-02",
+        "question_text": (
+            "ENCRYPTED CHANNEL: Your C2 server communicates over HTTPS. "
+            "What port does HTTPS use by default?"
+        ),
+        "correct_answer": "443",
+        "category": "security",
+    },
+    {
+        "id": "hq-security-03",
+        "question_text": (
+            "SHELL ACCESS: An attacker gained remote shell access via the "
+            "classic protocol that sends data in cleartext. "
+            "What is the name of that protocol? (3 letters)"
+        ),
+        "correct_answer": "ssh",
+        "category": "security",
+    },
+    {
+        "id": "hq-security-04",
+        "question_text": (
+            "HASH PROBE: The access log stores passwords as one-way digests. "
+            "What do we call the process of converting a password to such a digest?"
+        ),
+        "correct_answer": "hashing",
+        "category": "security",
+    },
+    {
+        "id": "hq-security-05",
+        "question_text": (
+            "NETWORK RECON: An attacker sends a packet and waits for a reply "
+            "to check if a host is alive. What command-line tool does this?"
+        ),
+        "correct_answer": "ping",
+        "category": "security",
+    },
+    # Python data structures
+    {
+        "id": "hq-datastruct-01",
+        "question_text": (
+            "LOOKUP TABLE: The exploit script maps usernames to access tokens "
+            "for O(1) retrieval. What Python data structure provides "
+            "key-to-value mapping?"
+        ),
+        "correct_answer": "dict",
+        "category": "python",
+    },
+    {
+        "id": "hq-datastruct-02",
+        "question_text": (
+            "UNIQUE NODES: The traversal algorithm tracks visited nodes and "
+            "must not revisit any. What Python data structure stores only "
+            "unique values?"
+        ),
+        "correct_answer": "set",
+        "category": "python",
+    },
+    {
+        "id": "hq-datastruct-03",
+        "question_text": (
+            "IMMUTABLE PAYLOAD: The exploit payload is a fixed sequence that "
+            "must not be modified after creation. What Python type is an "
+            "immutable ordered sequence?"
+        ),
+        "correct_answer": "tuple",
+        "category": "python",
+    },
+]
+
+
+# ---------------------------------------------------------------------------
+# Repository
+# ---------------------------------------------------------------------------
+
+
 class SqliteGameRepository:
-    """SQLite-backed repository using SQLModel. Same interface as JsonGameRepository."""
+    """SQLite-backed repository using SQLModel. Sole persistence backend."""
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -268,7 +280,10 @@ class SqliteGameRepository:
             SQLModel.metadata.drop_all(self.engine)
             SQLModel.metadata.create_all(self.engine)
 
+    # ------------------------------------------------------------------
     # Player ops
+    # ------------------------------------------------------------------
+
     def get_player(self, player_id: str) -> dict[str, Any] | None:
         with Session(self.engine) as session:
             row = session.get(PlayerModel, player_id)
@@ -292,7 +307,10 @@ class SqliteGameRepository:
             session.refresh(created)
             return {"id": created.id, "handle": created.handle, "created_at": created.created_at}
 
+    # ------------------------------------------------------------------
     # Game ops
+    # ------------------------------------------------------------------
+
     def create_game(
         self,
         player_id: str,
@@ -366,7 +384,10 @@ class SqliteGameRepository:
             "updated_at": now,
         }
 
+    # ------------------------------------------------------------------
     # Score ops
+    # ------------------------------------------------------------------
+
     def record_score(
         self,
         player_id: str,
@@ -423,10 +444,13 @@ class SqliteGameRepository:
         ))
         return items[:limit]
 
-    # Question Bank ops
+    # ------------------------------------------------------------------
+    # Question bank ops
+    # ------------------------------------------------------------------
+
     def get_random_question(self, category: str | None = None) -> dict[str, Any] | None:
         with Session(self.engine) as session:
-            stmt = select(QuestionModel).where(QuestionModel.has_been_asked == False)
+            stmt = select(QuestionModel).where(QuestionModel.has_been_asked == False)  # noqa: E712
             if category is not None:
                 stmt = stmt.where(QuestionModel.category == category)
             rows = list(session.exec(stmt).all())
@@ -473,10 +497,13 @@ class SqliteGameRepository:
         self.engine.dispose()
 
 
-def open_repo(path: str | Path):
-    """Return SqliteGameRepository for .db paths, JsonGameRepository otherwise."""
-    path = Path(path)
-    if path.suffix == ".db":
-        return SqliteGameRepository(path)
-    return JsonGameRepository(path)
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
 
+
+def open_repo(path: str | Path) -> SqliteGameRepository:
+    """Return a SqliteGameRepository connected to the given path.
+    Creates the database and tables if they do not exist.
+    """
+    return SqliteGameRepository(Path(path))
