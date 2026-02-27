@@ -185,8 +185,10 @@ def build_minimal_3x3_maze() -> Maze:
     )
 
 
-def build_square_maze(size: int, seed: int) -> Maze:
-    """Procedurally generate an NxN maze using seeded recursive backtracker."""
+def build_square_maze(size: int, seed: int, num_gates: int = 1) -> Maze:
+    """Procedurally generate an NxN maze using seeded recursive backtracker.
+    Places num_gates gates on distinct edges along the BFS shortest path.
+    """
     rng = random.Random(seed)
     width = height = size
     start = Position(0, 0)
@@ -253,12 +255,12 @@ def build_square_maze(size: int, seed: int) -> Maze:
         path_edges.append((prev, d))
         cur = prev
 
-    # Place at least one gate on a random edge along the path
-    if path_edges:
-        gate_pos, gate_dir = path_edges[rng.randint(0, len(path_edges) - 1)]
-        gate_id = f"gate-dynamic-{seed}"
+    # Place num_gates gates on distinct random edges along the BFS path
+    gates_to_place = min(num_gates, len(path_edges))
+    chosen_edges = rng.sample(path_edges, gates_to_place)
+    for i, (gate_pos, gate_dir) in enumerate(chosen_edges):
+        gate_id = f"gate-dynamic-{seed}-{i}"
         grid[gate_pos]["edge_gates"][gate_dir] = gate_id
-        # Puzzle in the cell we're moving to
         dr, dc = gate_dir.delta
         next_pos = Position(gate_pos.row + dr, gate_pos.col + dc)
         grid[next_pos]["puzzle_id"] = gate_id
